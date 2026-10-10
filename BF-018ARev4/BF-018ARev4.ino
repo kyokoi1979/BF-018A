@@ -9,6 +9,7 @@
 #include <WiFiManager.h>  // https://github.com/tzapu/WiFiManager
 #include "BF_Pcf8563.h"
 #include "BF_RtcxNtp.h"
+#include "BF_Log.h"
 
 //..:....1....:....2....:....3....:....4....:....5....:....6....:....7..
 // for TCO(Time Code Output)
@@ -17,9 +18,13 @@ struct tm       td;  // time of day: year, month, day, day of week, hour, minute
 struct timespec ts;  // time spec: second, nano-second
 
 //..:....1....:....2....:....3....:....4....:....5....:....6....:....7..
+// for syslog
+const char* syslog_server = "192.168.70.1";
+
+//..:....1....:....2....:....3....:....4....:....5....:....6....:....7..
 // for NTP
 const char* time_zone  = "JST-9";
-const char* ntp_server = "pool.ntp.org";
+const char* ntp_server = "ntp.nict.jp";
 bool rtcx_available(false);
 bool localtime_valid(false);
 
@@ -134,7 +139,8 @@ void WifiCheck()
   wl_status_t wifi_status_new = WiFi.status();
   if (wifi_status != wifi_status_new) {
     wifi_status = wifi_status_new;
-    Serial.printf("[WiFi]%s\n", WlStatus(wifi_status));
+    LogPrintf(wifi_status == WL_CONNECTED ? LOG_INFO : LOG_WARNING,
+              "[WiFi]%s\n", WlStatus(wifi_status));
     switch (wifi_status) {
       case WL_CONNECTED    : led_r = led_r_off;   break;
       case WL_NO_SSID_AVAIL: led_r = led_r_slow;  break;
@@ -526,6 +532,9 @@ void setup()
   wm.autoConnect();
   WiFi.setSleep(false);  // https://macsbug.wordpress.com/2021/05/02/buttona-on-m5stack-does-not-work-properly/
   wifi_retry_last_ms = millis() - wifi_retry_interval_ms;
+
+  // syslog start (after WiFi)
+  LogBegin(syslog_server);
 
   // NTP start
   NtpBegin(time_zone, ntp_server);

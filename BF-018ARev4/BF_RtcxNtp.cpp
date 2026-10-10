@@ -4,46 +4,66 @@
 #include <Arduino.h>
 #include "BF_Pcf8563.h"
 #include "BF_RtcxNtp.h"
+#include "BF_Log.h"
 
-bool sntp_sync_status_complete(false);
+volatile bool sntp_sync_status_complete(false);
 
-void NtpBegin(const char* time_zone, const char* ntp_server)
+void NtpBegin(const char* time_zone, const char* ntp_server, const char* ntp_server2)
 {
-  configTzTime(time_zone, ntp_server);
-  Serial.printf("NtpBegin: config TZ time = %s\n", time_zone);
-  Serial.printf("NtpBegin: SNTP sync mode = %d (0:IMMED 1:SMOOTH)\n", sntp_get_sync_mode());
-  Serial.printf("NtpBegin: SNTP sync interval = %dms\n", sntp_get_sync_interval());
+  configTzTime(time_zone, ntp_server, ntp_server2);
+  sntp_set_sync_interval(30000);  // retry every 30s until first sync
+  LogPrintf(LOG_INFO, "NtpBegin: config TZ time = %s\n", time_zone);
+  LogPrintf(LOG_INFO, "NtpBegin: SNTP sync mode = %d (0:IMMED 1:SMOOTH)\n", sntp_get_sync_mode());
+  LogPrintf(LOG_INFO, "NtpBegin: SNTP sync interval = %dms\n", sntp_get_sync_interval());
+
+  struct tm tm_start;
+  if (getLocalTime(&tm_start)) {
+    char buf[64];
+    strftime(buf, sizeof(buf), "%A, %B %d %Y %H:%M:%S", &tm_start);
+    LogPrintf(LOG_INFO, "NtpBegin: current time = %s\n", buf);
+  } else {
+    LogPrintf(LOG_WARNING, "NtpBegin: current time not available\n");
+  }
+
   sntp_sync_status_complete = false;
   sntp_set_time_sync_notification_cb(SntpTimeSyncNotificationCallback);
 }
 
 void SntpTimeSyncNotificationCallback(struct timeval *tv)
 {
+  // CAUTION: called from LwIP task — do NOT call WiFiUDP (LogPrintf) here
   sntp_sync_status_t sntp_sync_status = sntp_get_sync_status();
-  PrintSntpStatus("SNTP callback:", sntp_sync_status);
+  Serial.printf("SNTP callback: status = %d\n", (int)sntp_sync_status);
   if (sntp_sync_status == SNTP_SYNC_STATUS_COMPLETED) {
     sntp_sync_status_complete = true;
   }
 }
 
+const unsigned int sntp_status_interval_ms(60000);  // print status every 60s
+
 bool RtcxUpdate(bool rtcx_avail)
 {
+  static unsigned int sntp_status_last_ms(0);
+  if (millis() - sntp_status_last_ms >= sntp_status_interval_ms) {
+    sntp_status_last_ms = millis();
+    PrintSntpStatus("SNTP periodic:", sntp_get_sync_status());
+  }
+
   if (sntp_sync_status_complete) {
     sntp_sync_status_complete = false;
 
     struct tm tm_sync;
     getLocalTime(&tm_sync);
-    Serial.print(&tm_sync, "SNTP sync: %A, %B %d %Y %H:%M:%S\n");
-    // print sample: must be < 64
-    //....:....1....:....2....:....3....:....4....:....5....:....6....
-    //SNTP sync: Wednesday, September 11 2021 11:10:46
+    char buf[64];
+    strftime(buf, sizeof(buf), "%A, %B %d %Y %H:%M:%S", &tm_sync);
+    LogPrintf(LOG_INFO, "SNTP sync: %s (server: %s)\n", buf, sntp_getservername(0));
 
     if (rtcx_avail) {
       if (rtcx.WriteTime(&tm_sync) == 0) {
-        Serial.print("RTCx updated\n");
+        LogPrintf(LOG_INFO, "RTCx updated\n");
       }
       else {
-        Serial.print("RTCx update failed\n");
+        LogPrintf(LOG_WARNING, "RTCx update failed\n");
       }
     }
     return true;
@@ -63,7 +83,7 @@ void PrintSntpStatus(const char* header, sntp_sync_status_t sntp_sync_status)
   if (sntp_sync_status >= 0 && sntp_sync_status <= 2) {
     sntp_sync_status_index = sntp_sync_status;
   }
-  Serial.printf("%s status = %d %s\n", header, sntp_sync_status, sntp_sync_status_str[sntp_sync_status_index]);
+  LogPrintf(LOG_INFO, "%s status = %d %s\n", header, sntp_sync_status, sntp_sync_status_str[sntp_sync_status_index]);
 }
 
 bool SetTimeFromRtcx(const char* time_zone)

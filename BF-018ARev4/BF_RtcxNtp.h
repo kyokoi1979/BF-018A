@@ -8,7 +8,7 @@
 // examples
 // const char* time_zone  = "JST-9";
 // const char* ntp_server = "pool.ntp.org";
-void NtpBegin(const char* time_zone, const char* ntp_server);
+void NtpBegin(const char* time_zone, const char* ntp_server, const char* ntp_server2 = nullptr);
 void SntpTimeSyncNotificationCallback(struct timeval *tv);
 bool RtcxUpdate(bool rtcx_avail = true);
 void PrintSntpStatus(const char* header, sntp_sync_status_t sntp_sync_status);

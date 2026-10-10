@@ -8,10 +8,14 @@
 
 volatile bool sntp_sync_status_complete(false);
 
+// 30s retry until first sync; 3600s after (NICT: max 20 requests/hour)
+const uint32_t sntp_interval_initial_ms(30000);
+const uint32_t sntp_interval_regular_ms(3600000);
+
 void NtpBegin(const char* time_zone, const char* ntp_server, const char* ntp_server2)
 {
   configTzTime(time_zone, ntp_server, ntp_server2);
-  sntp_set_sync_interval(30000);  // retry every 30s until first sync
+  sntp_set_sync_interval(sntp_interval_initial_ms);  // retry every 30s until first sync
   LogPrintf(LOG_INFO, "NtpBegin: config TZ time = %s\n", time_zone);
   LogPrintf(LOG_INFO, "NtpBegin: SNTP sync mode = %d (0:IMMED 1:SMOOTH)\n", sntp_get_sync_mode());
   LogPrintf(LOG_INFO, "NtpBegin: SNTP sync interval = %dms\n", sntp_get_sync_interval());
@@ -51,6 +55,13 @@ bool RtcxUpdate(bool rtcx_avail)
 
   if (sntp_sync_status_complete) {
     sntp_sync_status_complete = false;
+
+    static bool first_sync_done(false);
+    if (!first_sync_done) {
+      first_sync_done = true;
+      sntp_set_sync_interval(sntp_interval_regular_ms);
+      LogPrintf(LOG_INFO, "SNTP first sync done: interval changed to %dms\n", sntp_interval_regular_ms);
+    }
 
     struct tm tm_sync;
     getLocalTime(&tm_sync);

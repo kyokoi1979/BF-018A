@@ -2,6 +2,29 @@
 ## ATOMS3 Lite, ATOM Lite/Matrixで動作する標準電波(JJY)シミュレータ
 ※ ATOMS3(無印)には対応しておりません。
 
+---
+## このリポジトリについて
+
+このリポジトリは [botanicfields/BF-018A](https://github.com/botanicfields/BF-018A) のforkです。
+
+### このforkでの変更点 (Rev.4)
+
+#### UDP syslogによるログ出力 (BF_Log)
+- Serialに加え、UDP syslog (RFC 3164) によるログ出力機能を追加しました（外部ライブラリ不要）
+
+#### NTPの改善
+- NTPサーバーを `ntp.nict.jp` に変更しました
+- 初回同期前のリトライ間隔を30秒に短縮しました
+- 初回同期後のポーリング間隔を1時間に変更しました（NICTガイドライン「1時間あたり最大20回」への準拠）
+- SNTPコールバック内のWiFiUDP呼び出しを削除し、LwIPタスクとのデッドロックを回避しました
+- `sntp_sync_status_complete` に `volatile` を追加し、マルチコア環境での可視性を確保しました
+
+#### ATOMS3 Lite：USB CDCのブロッキング問題を修正
+- USB CDCはホスト接続まで `Serial` 書き込みをブロックする仕様のため、USBホストなしのハブから電源供給した場合に `setup()` が進まない問題がありました
+- `setTxTimeoutMs(0)` を追加し、USBホストの有無によらずWiFi/NTP/TCOが起動するようにしました
+
+---
+
 ### 2025/8/15 修正
 - Rev.4を追加しました。M5Stack 3.x(Boards Manager)に対応しました。Rev.4はATOMS3 Liteで使用いただけます。
 - BF-018ARev3.inoを修正しました。M5Atom Lite/Matrixの判定を改善しました。

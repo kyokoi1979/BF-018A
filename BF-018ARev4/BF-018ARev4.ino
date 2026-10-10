@@ -474,6 +474,9 @@ void setup()
   cfg.serial_baudrate = 115200;  // default=0. use Serial.print(). 
   cfg.external_rtc = true;       // default=false. use Unit RTC.
   M5.begin(cfg);
+#if defined (CONFIG_IDF_TARGET_ESP32S3)
+  Serial.setTxTimeoutMs(0);  // prevent USB CDC from blocking when no host is connected
+#endif
   delay(3000);
   Serial.println();
 

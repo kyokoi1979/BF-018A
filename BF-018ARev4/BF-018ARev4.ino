@@ -7,6 +7,8 @@
 #include <Ticker.h>
 #include <WiFi.h>
 #include <WiFiManager.h>  // https://github.com/tzapu/WiFiManager
+#include <lwip/dns.h>
+#include <lwip/ip6_addr.h>
 #include "BF_Pcf8563.h"
 #include "BF_RtcxNtp.h"
 #include "BF_Log.h"
@@ -25,6 +27,11 @@ const char* syslog_server = "192.168.70.1";
 // for NTP
 const char* time_zone  = "JST-9";
 const char* ntp_server = "ntp.nict.jp";
+
+//..:....1....:....2....:....3....:....4....:....5....:....6....:....7..
+// for connectivity check
+const char* gateway_ip  = "10.0.0.1";  // home gateway
+const char* internet_ip = "8.8.8.8";   // internet check host (ICMP)
 bool rtcx_available(false);
 bool localtime_valid(false);
 
@@ -157,7 +164,7 @@ void WifiCheck()
 
   // reboot if wifi connection fails
   if (wifi_status == WL_CONNECT_FAILED) {
-    Serial.print("[WiFi]connect failed: rebooting..\n");
+    LogPrintf(LOG_ERR, "[WiFi]connect failed: rebooting..\n");
     ESP.restart();
     return;
   }
@@ -170,15 +177,15 @@ void WifiCheck()
 
   // reboot if wifi is disconnected for a long time
   if (++wifi_retry_times > wifi_retry_max_times) {
-    Serial.print("[WiFi]disconnect timeout: rebooting..\n");
+    LogPrintf(LOG_ERR, "[WiFi]disconnect timeout: rebooting..\n");
     ESP.restart();
     return;
   }
 
   // reconnect, and reboot if reconnection fails
-  Serial.printf("[WiFi]reconnect %d\n", wifi_retry_times);
+  LogPrintf(LOG_WARNING, "[WiFi]reconnect %d\n", wifi_retry_times);
   if (!WiFi.reconnect()) {
-    Serial.print("[WiFi]reconnect failed: rebooting..\n");
+    LogPrintf(LOG_ERR, "[WiFi]reconnect failed: rebooting..\n");
     ESP.restart();
     return;
   };
@@ -210,9 +217,9 @@ void TcoInit()
   if (M5.getBoard() == m5::board_t::board_M5AtomS3Lite) {
     ledc_pin = ledc_pin_atoms3;
   }
-  Serial.printf("ledcAttach result= %d\n", ledcAttach(ledc_pin, ledc_frequency, ledc_resolution));
-  Serial.printf("ledcWrite result= %d\n", ledcWrite(ledc_pin, ledc_duty_on));
-  Serial.printf("pin= %u, duty= %lu, freq= %lu\n", ledc_pin, ledcRead(ledc_pin), ledcReadFreq(ledc_pin));
+  LogPrintf(LOG_DEBUG, "ledcAttach result= %d\n", ledcAttach(ledc_pin, ledc_frequency, ledc_resolution));
+  LogPrintf(LOG_DEBUG, "ledcWrite result= %d\n", ledcWrite(ledc_pin, ledc_duty_on));
+  LogPrintf(LOG_INFO, "pin= %u, duty= %lu, freq= %lu\n", ledc_pin, ledcRead(ledc_pin), ledcReadFreq(ledc_pin));
 
   // wait until middle of 100ms timing. ex. 50ms, 150ms, 250ms,..
   clock_gettime(CLOCK_REALTIME, &ts);
@@ -220,7 +227,7 @@ void TcoInit()
 
   // for the first sample of statistics
   clock_gettime(CLOCK_REALTIME, &ts);
-  Serial.printf("ts.tv_nsec = %ld\n", ts.tv_nsec);
+  LogPrintf(LOG_DEBUG, "ts.tv_nsec = %ld\n", ts.tv_nsec);
 
   // start Ticker for TCO
   tk.attach_ms(ticker_interval_ms, TcoGen);
@@ -481,12 +488,12 @@ void setup()
   Serial.println();
 
   // FastLED
-#if defined (CONFIG_IDF_TARGET_ESP32S3)  // FastLED requires strict constant for the pin number 
+#if defined (CONFIG_IDF_TARGET_ESP32S3)  // FastLED requires strict constant for the pin number
   FastLED.addLeds<WS2811, led_pin_atoms3lite, GRB>(leds, led_num);
-  Serial.println("FastLED add LEDs for ATOMS3 Lite");
+  LogPrintf(LOG_INFO, "FastLED add LEDs for ATOMS3 Lite\n");
 #else
   FastLED.addLeds<WS2811, led_pin_atom, GRB>(leds, led_num);
-  Serial.println("FastLED add LEDs for M5Atom Lite/Matrix");
+  LogPrintf(LOG_INFO, "FastLED add LEDs for M5Atom Lite/Matrix\n");
 #endif
   FastLED.setBrightness(led_brightness);
   for (int i = 0; i < led_num; ++i) {
@@ -501,7 +508,7 @@ void setup()
     }
   }
   if (!localtime_valid) {
-    Serial.print("RTC not valid: set the localtime temporarily\n");
+    LogPrintf(LOG_WARNING, "RTC not valid: set the localtime temporarily\n");
     td.tm_year = 117;  // 2017 > 2016, getLocalTime() returns true
     td.tm_mon  = 0;    // January
     td.tm_mday = 1;
@@ -512,7 +519,11 @@ void setup()
     settimeofday(&tv, NULL);
   }
   getLocalTime(&td);
-  Serial.print(&td, "localtime: %A, %B %d %Y %H:%M:%S\n");
+  {
+    char buf[64];
+    strftime(buf, sizeof(buf), "localtime: %A, %B %d %Y %H:%M:%S", &td);
+    LogPrintf(LOG_INFO, "%s\n", buf);
+  }
   // print sample: must be < 64
   //....:....1....:....2....:....3....:....4....:....5....:....6....
   //localtime: Wednesday, September 11 2021 11:10:46
@@ -532,6 +543,35 @@ void setup()
   // WiFi connect
   wm.setConfigPortalTimeout(wifi_config_portal_timeout_sec);
   wm.setAPCallback(WifiConfigModeCallback);
+  // force IPv4 DNS after DHCP/DHCPv6: ESP32 may receive only IPv6 DNS and fail to resolve
+  // Register for both IPv4 and IPv6 address events — DHCPv6/RA can overwrite DNS after IPv4 DHCP
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+    // log DHCP-assigned config (before DNS override)
+    LogPrintf(LOG_INFO, "[NET]IP: %s  mask: %s  gw: %s\n",
+              WiFi.localIP().toString().c_str(),
+              WiFi.subnetMask().toString().c_str(),
+              WiFi.gatewayIP().toString().c_str());
+    LogPrintf(LOG_INFO, "[NET]DNS(DHCP): %s / %s\n",
+              WiFi.dnsIP(0).toString().c_str(),
+              WiFi.dnsIP(1).toString().c_str());
+    ip_addr_t dns4;
+    memset(&dns4, 0, sizeof(dns4));
+    IP4_ADDR(&dns4.u_addr.ip4, 8, 8, 8, 8);
+    dns4.type = IPADDR_TYPE_V4;
+    dns_setserver(0, &dns4);
+  }, ARDUINO_EVENT_WIFI_STA_GOT_IP);
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+    // DHCPv6/RA may have overwritten DNS — re-apply IPv4 override
+    ip_addr_t dns4;
+    memset(&dns4, 0, sizeof(dns4));
+    IP4_ADDR(&dns4.u_addr.ip4, 8, 8, 8, 8);
+    dns4.type = IPADDR_TYPE_V4;
+    dns_setserver(0, &dns4);
+    char ip6buf[40];
+    ip6addr_ntoa_r((const ip6_addr_t*)&info.got_ip6.ip6_info, ip6buf, sizeof(ip6buf));
+    LogPrintf(LOG_INFO, "[NET]IPv6: %s  DNS re-set to 8.8.8.8\n", ip6buf);
+  }, ARDUINO_EVENT_WIFI_STA_GOT_IP6);
+
   wm.autoConnect();
   WiFi.setSleep(false);  // https://macsbug.wordpress.com/2021/05/02/buttona-on-m5stack-does-not-work-properly/
   wifi_retry_last_ms = millis() - wifi_retry_interval_ms;
@@ -541,6 +581,8 @@ void setup()
 
   // NTP start
   NtpBegin(time_zone, ntp_server);
+  RtcxSetDiagHosts(gateway_ip, internet_ip);
+  RtcxSetDnsOverride("8.8.8.8");
 
   // TCO start
   TcoInit();
